@@ -6,7 +6,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from dataAcquisition import DataAcquisition
 
 from langchain_classic.retrievers.multi_query import  MultiQueryRetriever
-
+from llm import llm
 
 
 
@@ -36,7 +36,6 @@ if os.path.exists(DB_DIR) and os.listdir(DB_DIR):
 else:
     chunks = data_acquisition.chunks()
     retriever = data_acquisition.save_vector_DB(chunks)
-llm = ChatGroq(model=os.getenv('GROQ_MODEL'), temperature=0)
 
 multi_retriever = MultiQueryRetriever.from_llm(
     retriever=retriever,
@@ -48,9 +47,11 @@ multi_retriever = MultiQueryRetriever.from_llm(
 prompt = ChatPromptTemplate.from_template("""
 You are a helpful assistant.
 
-Use ONLY the provided context to answer the question.
+Answer the question using ONLY the provided context.
 
-If the answer is not present in the context say:
+If the context contains partial information, combine the pieces to give the most complete answer possible.
+
+If the answer is truly missing, say:
 "The information is not available in the provided source."
 
 Chat History:
@@ -72,16 +73,30 @@ class State(TypedDict):
     chat_history: List[str]
     sources: List[str]
 
-async def retrieve(state: State):
 
-    docs = await multi_retriever.ainvoke(state["question"])
+rewrite_prompt = ChatPromptTemplate.from_template("""
+Rewrite the question into a clear search query.
+
+Question: {question}
+""")
+
+rewrite_chain = rewrite_prompt | llm
+
+async def retrieve(state: State):
+    query = await rewrite_chain.ainvoke({"question": state["question"]})
+
+    docs = await multi_retriever.ainvoke(query.content)
+
 
     docs = list({doc.page_content: doc for doc in docs}.values())
 
 
-    selected_docs = docs[:4]
+    selected_docs = docs[:10]
 
-    context = "\n\n".join(doc.page_content for doc in selected_docs)
+    context = "\n\n".join(
+        f"[Source: {doc.metadata.get('source', 'unknown')}]\n{doc.page_content}"
+        for doc in selected_docs
+    )
 
     sources = [doc.metadata.get("source", "Unknown") for doc in selected_docs]
 
