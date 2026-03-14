@@ -8,7 +8,22 @@ from langchain.tools import tool
 from dataAcquisition import DataAcquisition
 
 
+
+import logging
+
+os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
+
+from transformers import logging as transformers_logging
+transformers_logging.set_verbosity_error()
+
+import warnings
+warnings.filterwarnings("ignore", message=".*TypedStorage is deprecated.*")
+warnings.filterwarnings("ignore", category=UserWarning, module="torch.nn.modules.module")
+
+
+
 load_dotenv()
+
 DB_DIR='./chroma_db'
 @tool
 def company_data_search(query: str) -> str:
