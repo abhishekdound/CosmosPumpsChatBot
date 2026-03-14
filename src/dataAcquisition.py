@@ -1,12 +1,12 @@
-from langchain_community.document_loaders import UnstructuredURLLoader
+import os
+from langchain_text_splitters import MarkdownHeaderTextSplitter
+from langchain_community.document_loaders import FireCrawlLoader
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_chroma import Chroma
 from langchain_community.retrievers import BM25Retriever
 from langchain_classic.retrievers import EnsembleRetriever
-from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.documents import Document
-from llm import llm
 
 
 class DataAcquisition:
@@ -20,98 +20,79 @@ class DataAcquisition:
         )
 
     def chunks(self, url="https://en.wikipedia.org/wiki/Virat_Kohli"):
-
-        loader = UnstructuredURLLoader(urls=[url])
+        loader = FireCrawlLoader(
+            api_key=os.getenv('FIRECRAWL_API_KEY'),
+            url=url,
+            mode="scrape",
+            params={
+                "formats": ["markdown"],
+                "waitFor": 2000,
+                "onlyMainContent": False
+            }
+        )
         documents = loader.load()
+        full_markdown = "\n\n".join([doc.page_content for doc in documents])
 
-        fact_prompt = ChatPromptTemplate.from_template("""
-    Extract factual statements from the text below.
-    Convert tables, statistics, and structured data into clear sentences.
-
-    Text:
-    {text}
-
-    Return only the extracted facts.
-    """)
-
-        fact_chain = fact_prompt | llm
-        fact_docs = []
-
-        def normalize_tables(text):
-            lines = text.split("\n")
-            new_lines = []
-            for line in lines:
-                if "|" in line:
-                    line = line.replace("|", " ")
-                new_lines.append(line)
-            return "\n".join(new_lines)
-
-        for doc in documents:
-            doc.page_content = normalize_tables(doc.page_content)
-            doc.metadata["source"] = url
-
-        responses = fact_chain.batch(
-            [{"text": doc.page_content} for doc in documents]
+        headers_to_split_on = [
+            ("#", "Header 1"),
+            ("##", "Header 2"),
+            ("###", "Header 3"),
+        ]
+        markdown_splitter = MarkdownHeaderTextSplitter(
+            headers_to_split_on=headers_to_split_on,
+            strip_headers=False
         )
+        header_splits = markdown_splitter.split_text(full_markdown)
 
-        for response in responses:
-
-            facts = response.content.split("\n")
-
-            for fact in facts:
-                fact = fact.strip("-•0123456789. ").strip()
-                if fact and len(fact) < 300:
-                    fact_docs.append(
-                        Document(
-                            page_content=fact,
-                            metadata={"source": url, "type": "fact"}
-                        )
-                    )
-
-        splitter = RecursiveCharacterTextSplitter(
-            chunk_size=800,
-            chunk_overlap=200
+        text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=1200,
+            chunk_overlap=300
         )
+        final_chunks = text_splitter.split_documents(header_splits)
 
-        chunks = splitter.split_documents(documents)
+        for i, chunk in enumerate(final_chunks):
+            subject = chunk.metadata.get("Header 1") or chunk.metadata.get("og:title") or "Article"
+            section = chunk.metadata.get("Header 2") or "Main Content"
 
-        for c in chunks:
-            c.metadata["source"] = url
-            c.metadata["type"] = "chunk"
+            chunk.page_content = f"Source: {subject} ({section})\n{chunk.page_content}"
 
-        return chunks + fact_docs
+            chunk.metadata.update({"chunk_id": i})
+
+        return final_chunks
 
     def save_vector_DB(self, chunks):
 
         vector_db = Chroma.from_documents(
             chunks,
             self.embeddings,
-            persist_directory="./chroma_db"
+            persist_directory="./chroma_db",
+            collection_metadata={"hnsw:space": "cosine"}
         )
 
         vector_retriever = vector_db.as_retriever(
-            search_type="mmr",
-            search_kwargs={"k": 50, "fetch_k": 120}
+            search_type="similarity",
+            search_kwargs={"k": 3}
         )
 
         bm25_retriever = BM25Retriever.from_documents(chunks)
-        bm25_retriever.k = 20
+        bm25_retriever.k = 2
 
         return EnsembleRetriever(
             retrievers=[bm25_retriever, vector_retriever],
-            weights=[0.6, 0.4]
+            weights=[0.5, 0.5]
         )
 
     def load_vector_DB(self):
 
         vector_db = Chroma(
             persist_directory="./chroma_db",
-            embedding_function=self.embeddings
+            embedding_function=self.embeddings,
+            collection_metadata={"hnsw:space": "cosine"}
         )
 
         vector_retriever = vector_db.as_retriever(
-            search_type="mmr",
-            search_kwargs={"k": 50, "fetch_k": 120}
+            search_type="similarity",
+            search_kwargs={"k": 2}
         )
 
         docs = vector_db.get(include=["documents", "metadatas"])
@@ -122,9 +103,9 @@ class DataAcquisition:
         ]
 
         bm25_retriever = BM25Retriever.from_documents(bm25_docs)
-        bm25_retriever.k = 20
+        bm25_retriever.k = 3
 
         return EnsembleRetriever(
             retrievers=[bm25_retriever, vector_retriever],
-            weights=[0.6, 0.4]
+            weights=[0.5, 0.5]
         )

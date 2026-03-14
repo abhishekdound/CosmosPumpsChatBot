@@ -1,7 +1,6 @@
 import os
 
 from dotenv import load_dotenv
-from langchain_groq import ChatGroq
 from langchain_core.prompts import ChatPromptTemplate
 from dataAcquisition import DataAcquisition
 
@@ -45,24 +44,24 @@ multi_retriever = MultiQueryRetriever.from_llm(
 
 
 prompt = ChatPromptTemplate.from_template("""
-You are a helpful assistant.
-
-Answer the question using ONLY the provided context.
-
-If the context contains partial information, combine the pieces to give the most complete answer possible.
-
-If the answer is truly missing, say:
-"The information is not available in the provided source."
-
-Chat History:
-{chat_history}
-
-Context:
-{context}
-
-Question:
-{question}
-""")
+                                        You are a helpful assistant.
+                                        
+                                        Answer the question using ONLY the provided context.
+                                        
+                                        If the context contains partial information, combine the pieces to give the most complete answer possible.
+                                        
+                                        If the answer is truly missing, say:
+                                        "The information is not available in the provided source."
+                                        
+                                        Chat History:
+                                        {chat_history}
+                                        
+                                        Context:
+                                        {context}
+                                        
+                                        Question:
+                                        {question}
+                                        """)
 
 from typing import TypedDict , List
 
@@ -74,35 +73,30 @@ class State(TypedDict):
     sources: List[str]
 
 
-rewrite_prompt = ChatPromptTemplate.from_template("""
-Rewrite the question into a clear search query.
 
-Question: {question}
-""")
-
-rewrite_chain = rewrite_prompt | llm
 
 async def retrieve(state: State):
-    query = await rewrite_chain.ainvoke({"question": state["question"]})
 
-    docs = await multi_retriever.ainvoke(query.content)
+    docs = await multi_retriever.ainvoke(state["question"])
 
+    seen_ids = set()
+    unique_docs = []
+    for doc in docs:
+        cid = doc.metadata.get("chunk_id")
+        if cid not in seen_ids:
+            unique_docs.append(doc)
+            seen_ids.add(cid)
 
-    docs = list({doc.page_content: doc for doc in docs}.values())
-
-
-    selected_docs = docs[:10]
+    selected_docs = unique_docs[:7]
 
     context = "\n\n".join(
         f"[Source: {doc.metadata.get('source', 'unknown')}]\n{doc.page_content}"
         for doc in selected_docs
     )
 
-    sources = [doc.metadata.get("source", "Unknown") for doc in selected_docs]
-
     return {
         "context": context,
-        "sources": sources
+        "sources": [doc.metadata.get("source", "Unknown") for doc in selected_docs]
     }
 
 chain = prompt | llm
