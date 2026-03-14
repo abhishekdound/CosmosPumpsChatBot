@@ -9,6 +9,7 @@ from langchain_classic.retrievers.multi_query import  MultiQueryRetriever
 
 
 
+
 import logging
 
 os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
@@ -27,6 +28,7 @@ load_dotenv()
 DB_DIR='./chroma_db'
 
 
+
 data_acquisition = DataAcquisition()
 
 if os.path.exists(DB_DIR) and os.listdir(DB_DIR):
@@ -40,6 +42,7 @@ multi_retriever = MultiQueryRetriever.from_llm(
     retriever=retriever,
     llm=llm
 )
+
 
 
 prompt = ChatPromptTemplate.from_template("""
@@ -73,9 +76,10 @@ async def retrieve(state: State):
 
     docs = await multi_retriever.ainvoke(state["question"])
 
-    unique_docs = {doc.page_content: doc for doc in docs}.values()
+    docs = list({doc.page_content: doc for doc in docs}.values())
 
-    selected_docs = list(unique_docs)[:4]
+
+    selected_docs = docs[:4]
 
     context = "\n\n".join(doc.page_content for doc in selected_docs)
 
