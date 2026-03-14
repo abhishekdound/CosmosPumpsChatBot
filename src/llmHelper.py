@@ -67,14 +67,24 @@ class State(TypedDict):
     context: str
     answer: str
     chat_history: List[str]
+    sources: List[str]
 
-def retrieve(state: State):
+async def retrieve(state: State):
 
-    docs = multi_retriever.invoke(state["question"])
+    docs = await multi_retriever.ainvoke(state["question"])
 
-    context = "\n\n".join(doc.page_content for doc in docs[:4])
+    unique_docs = {doc.page_content: doc for doc in docs}.values()
 
-    return {"context": context}
+    selected_docs = list(unique_docs)[:4]
+
+    context = "\n\n".join(doc.page_content for doc in selected_docs)
+
+    sources = [doc.metadata.get("source", "Unknown") for doc in selected_docs]
+
+    return {
+        "context": context,
+        "sources": sources
+    }
 
 chain = prompt | llm
 
