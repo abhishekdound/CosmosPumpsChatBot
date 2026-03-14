@@ -38,13 +38,15 @@ llm = ChatGroq(model=os.getenv('GROQ_MODEL'), temperature=0)
 
 
 prompt = ChatPromptTemplate.from_template("""
-You are a question answering system.
+You are a helpful assistant.
 
-Use ONLY the information provided in the context.
+Use ONLY the provided context to answer the question.
 
-If the answer is not explicitly mentioned in the context,
-respond exactly with:
+If the answer is not present in the context say:
 "The information is not available in the provided source."
+
+Chat History:
+{chat_history}
 
 Context:
 {context}
@@ -53,12 +55,13 @@ Question:
 {question}
 """)
 
-from typing import TypedDict
+from typing import TypedDict , List
 
 class State(TypedDict):
     question: str
     context: str
     answer: str
+    chat_history: List[str]
 
 def retrieve(state: State):
 
@@ -69,13 +72,15 @@ def retrieve(state: State):
     return {"context": context}
 
 chain = prompt | llm
+
 def generate(state: State):
 
-
+    history = "\n".join(state["chat_history"])
 
     response = chain.invoke({
         "context": state["context"],
-        "question": state["question"]
+        "question": state["question"],
+        "chat_history": history
     })
 
     return {"answer": response.content}
@@ -94,10 +99,10 @@ graph_builder.add_edge("generate", END)
 
 graph = graph_builder.compile()
 
-result = graph.invoke({
-    "question": "When did Kohli announce his retirement from Test cricket?"
-})
-
-print(result["answer"])
+# result = graph.invoke({
+#     "question": "where is paris?"
+# })
+#
+# print(result["answer"])
 
 

@@ -15,7 +15,7 @@ class DataAcquisition:
     def chunks(self,url="https://en.wikipedia.org/wiki/Virat_Kohli"):
         loader=FireCrawlLoader(url=url,mode="crawl")
         documents=loader.load()
-        splitter=RecursiveCharacterTextSplitter(chunk_size=1200, chunk_overlap=200)
+        splitter=RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=100)
         chunks = splitter.split_documents(documents)
         return chunks
     def save_vector_DB(self,chunks):
@@ -25,11 +25,11 @@ class DataAcquisition:
             persist_directory="./chroma_db"
         )
         return vector_db.as_retriever(search_type="mmr",
-                                      search_kwargs={"k": 5, "fetch_k":20})
+                                      search_kwargs={"k":10, "fetch_k":30})
 
     def load_vector_DB(self):
         vector_db=Chroma(persist_directory="./chroma_db", embedding_function=self.embeddings)
         return vector_db.as_retriever(search_type="mmr",
-                                      search_kwargs={"k": 5, "fetch_k":20})
+                                      search_kwargs={"k":10, "fetch_k":30})
 
 
