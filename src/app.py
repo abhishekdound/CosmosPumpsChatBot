@@ -2,31 +2,33 @@ import chainlit as cl
 from llmHelper import graph
 
 
-memory = []
 
 @cl.on_chat_start
 async def start():
-    global memory
-    memory = []
+    cl.user_session.set("memory", [])
     await cl.Message(content="Hello! Ask me anything about the documents.").send()
 
 
 @cl.on_message
 async def main(message: cl.Message):
 
-    global memory
+    memory = cl.user_session.get("memory")
 
-    question = message.content
+    msg = cl.Message(content="")
+    await msg.send()
 
-    result = graph.invoke({
-        "question": question,
+    result = await cl.make_async(graph.invoke)({
+        "question": message.content,
         "chat_history": memory
     })
 
     answer = result["answer"]
 
 
-    memory.append(f"User: {question}")
+    memory.append(f"User: {message.content}")
     memory.append(f"Assistant: {answer}")
+    cl.user_session.set("memory", memory)
+    for token in answer.split():
+        await msg.stream_token(token + " ")
 
-    await cl.Message(content=answer).send()
+    await msg.update()

@@ -3,9 +3,9 @@ import os
 from dotenv import load_dotenv
 from langchain_groq import ChatGroq
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_classic import hub
-from langchain.tools import tool
 from dataAcquisition import DataAcquisition
+
+from langchain_classic.retrievers.multi_query import  MultiQueryRetriever
 
 
 
@@ -36,6 +36,11 @@ else:
     retriever = data_acquisition.save_vector_DB(chunks)
 llm = ChatGroq(model=os.getenv('GROQ_MODEL'), temperature=0)
 
+multi_retriever = MultiQueryRetriever.from_llm(
+    retriever=retriever,
+    llm=llm
+)
+
 
 prompt = ChatPromptTemplate.from_template("""
 You are a helpful assistant.
@@ -65,7 +70,7 @@ class State(TypedDict):
 
 def retrieve(state: State):
 
-    docs = retriever.invoke(state["question"])
+    docs = multi_retriever.invoke(state["question"])
 
     context = "\n\n".join(doc.page_content for doc in docs[:4])
 
@@ -73,11 +78,11 @@ def retrieve(state: State):
 
 chain = prompt | llm
 
-def generate(state: State):
+async def generate(state: State):
 
     history = "\n".join(state["chat_history"])
 
-    response = chain.invoke({
+    response = await chain.ainvoke({
         "context": state["context"],
         "question": state["question"],
         "chat_history": history
