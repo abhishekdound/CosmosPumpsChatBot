@@ -1,7 +1,7 @@
 from langchain_community.document_loaders import FireCrawlLoader
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_classic.text_splitter import RecursiveCharacterTextSplitter
-from langchain_community.vectorstores import Chroma
+from langchain_chroma import Chroma
 
 
 class DataAcquisition:
@@ -24,10 +24,12 @@ class DataAcquisition:
             self.embeddings,
             persist_directory="./chroma_db"
         )
-        return vector_db.as_retriever(search_kwargs={"k": 6})
+        return vector_db.as_retriever(search_type="mmr",
+                                      search_kwargs={"k": 5, "fetch_k":20})
 
     def load_vector_DB(self):
         vector_db=Chroma(persist_directory="./chroma_db", embedding_function=self.embeddings)
-        return vector_db.as_retriever(search_kwargs={"k": 6})
+        return vector_db.as_retriever(search_type="mmr",
+                                      search_kwargs={"k": 5, "fetch_k":20})
 
 
