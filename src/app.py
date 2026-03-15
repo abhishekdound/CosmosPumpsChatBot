@@ -14,22 +14,46 @@ async def start():
 async def main(message: cl.Message):
 
     memory = cl.user_session.get("memory")
-
+    search_step = cl.Step(name="Searching documents...")
+    await search_step.send()
     msg = cl.Message(content="")
+    full_answer = ""
+    sources = []
+    has_started_streaming = False
+
+    async for event in graph.astream_events(
+            {
+                "question": message.content,
+                "chat_history": memory,
+                "sources": []
+            },
+            version="v2"
+    ):
+
+
+        if event["event"] == "on_chat_model_stream":
+            if "final_response" in event.get("tags", []):
+                if not has_started_streaming :
+                    await search_step.remove()
+                    has_started_streaming = True
+
+
+                content = getattr(event["data"]["chunk"], "content", "")
+
+                if content:
+                    full_answer += content
+                    await msg.stream_token(content)
+
+        elif event["event"] == "on_chain_end" and event["name"] == "retrieve":
+            sources = event["data"]["output"].get("sources", [])
+
+    if sources:
+        unique_sources = ", ".join(dict.fromkeys(sources))
+        source_metadata = f"\n\n*Sources: {unique_sources}*"
+        await msg.stream_token(source_metadata)
+        full_answer += source_metadata
     await msg.send()
 
-    result = await graph.ainvoke({
-        "question": message.content,
-        "chat_history": memory
-    })
-
-    answer = result["answer"]
-
     memory.append(f"User: {message.content}")
-    memory.append(f"Assistant: {answer}")
+    memory.append(f"Assistant: {full_answer}")
     cl.user_session.set("memory", memory)
-
-    for token in answer.split():
-        await msg.stream_token(token + " ")
-
-    await msg.update()

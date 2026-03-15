@@ -3,13 +3,17 @@ import os
 from dotenv import load_dotenv
 from langchain_core.prompts import ChatPromptTemplate
 from dataAcquisition import DataAcquisition
+from langchain_core.prompts import PromptTemplate
+from langchain_core.output_parsers import StrOutputParser
+from langchain_classic.retrievers.multi_query import MultiQueryRetriever
 
-from langchain_classic.retrievers.multi_query import  MultiQueryRetriever
 from llm import llm
 
 
 
 import logging
+
+logging.getLogger("langchain.retrievers.multi_query").setLevel(logging.ERROR)
 
 os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
 
@@ -24,7 +28,9 @@ warnings.filterwarnings("ignore", category=UserWarning, module="torch.nn.modules
 
 load_dotenv()
 
-DB_DIR='./chroma_db'
+current_dir = os.path.dirname(os.path.abspath(__file__))
+
+DB_DIR = os.path.join(current_dir, 'chroma_db')
 
 
 
@@ -36,10 +42,7 @@ else:
     chunks = data_acquisition.chunks()
     retriever = data_acquisition.save_vector_DB(chunks)
 
-multi_retriever = MultiQueryRetriever.from_llm(
-    retriever=retriever,
-    llm=llm
-)
+
 
 
 
@@ -70,14 +73,42 @@ class State(TypedDict):
     context: str
     answer: str
     chat_history: List[str]
-    sources: List[str]
+    sources:  List[str]
 
 
+MULTI_QUERY_PROMPT = PromptTemplate(
+    input_variables=["question"],
+    template="""You are an AI language model assistant. Your task is to generate five 
+    different versions of the given user question to retrieve relevant documents from a vector database. 
 
+    Original question: {question}
+
+    Provide these alternative questions separated by newlines."""
+)
+
+
+condense_question_system_template = """
+Given a chat history and a follow-up question, rephrase the follow-up question 
+to be a standalone question that can be understood without the chat history.
+Do NOT answer the question, just reformulate it.
+"""
+
+condense_question_prompt = ChatPromptTemplate.from_messages([
+    ("system", condense_question_system_template),
+    ("human", "History:\n{chat_history}\n\nQuestion: {question}"),
+])
+rephrase_chain = condense_question_prompt | llm | StrOutputParser()
+
+multi_retriever=MultiQueryRetriever.from_llm(retriever=retriever,prompt=MULTI_QUERY_PROMPT,llm=llm)
 
 async def retrieve(state: State):
+    recent_history = "\n".join(state.get("chat_history", [])[-4:])
+    standalone_question = await rephrase_chain.ainvoke({
+        "question": state["question"],
+        "chat_history": recent_history
+    })
 
-    docs = await multi_retriever.ainvoke(state["question"])
+    docs = await multi_retriever.ainvoke(standalone_question)
 
     seen_ids = set()
     unique_docs = []
@@ -87,11 +118,11 @@ async def retrieve(state: State):
             unique_docs.append(doc)
             seen_ids.add(cid)
 
-    selected_docs = unique_docs[:7]
+    selected_docs = unique_docs[:10]
+
 
     context = "\n\n".join(
-        f"[Source: {doc.metadata.get('source', 'unknown')}]\n{doc.page_content}"
-        for doc in selected_docs
+        [doc.page_content for doc in selected_docs]
     )
 
     return {
@@ -99,11 +130,11 @@ async def retrieve(state: State):
         "sources": [doc.metadata.get("source", "Unknown") for doc in selected_docs]
     }
 
-chain = prompt | llm
+chain = (prompt | llm).with_config({"tags": ["final_response"]})
 
 async def generate(state: State):
 
-    history = "\n".join(state["chat_history"])
+    history = "\n".join(state.get("chat_history", [])[-4:])
 
     response = await chain.ainvoke({
         "context": state["context"],
