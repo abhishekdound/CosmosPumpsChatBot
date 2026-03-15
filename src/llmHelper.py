@@ -9,19 +9,25 @@ from langchain_classic.retrievers.multi_query import MultiQueryRetriever
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
 from langgraph.graph.message import add_messages
 import webHookListner
+import asyncio
+
+from langchain_classic.retrievers.document_compressors import LLMChainExtractor
+
+from langchain_community.cross_encoders import HuggingFaceCrossEncoder
+from langchain_classic.retrievers.document_compressors import CrossEncoderReranker
 
 from llm import llm
 
 
 
-import logging
 
-logging.getLogger("langchain.retrievers.multi_query").setLevel(logging.ERROR)
-
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
+os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
 
-from transformers import logging as transformers_logging
-transformers_logging.set_verbosity_error()
+from transformers.utils import logging
+logging.set_verbosity_error()
+
 
 import warnings
 warnings.filterwarnings("ignore", message=".*TypedStorage is deprecated.*")
@@ -40,10 +46,12 @@ load_dotenv()
 prompt = ChatPromptTemplate.from_messages([
     ("system", (
         "You are a strict Retrieval-Augmented Generation (RAG) assistant. "
-        "Use ONLY the provided context to answer the question. "
-        "If the answer is not in the context, exactly say: 'I do not have information about this in my database.' "
-        "Do NOT use your own external knowledge or training data to answer.\n\n"
-        "Context:\n{context}"
+"Use ONLY the provided context to answer the question. "
+"If the answer is not in the context, exactly say: "
+"'I do not have information about this in my database.' "
+"Do NOT use your own external knowledge. "
+"Answer briefly and precisely.\n\n"
+"Context:\n{context}"
     )),
     MessagesPlaceholder(variable_name="chat_history"),
     ("human", "{question}"),
@@ -60,12 +68,12 @@ class State(TypedDict):
 
 MULTI_QUERY_PROMPT = PromptTemplate(
     input_variables=["question"],
-    template="""You are an AI language model assistant. Your task is to generate five 
-    different versions of the given user question to retrieve relevant documents from a vector database. 
+    template="""Generate three different versions of the user question
+to retrieve relevant documents from a vector database.
 
-    Original question: {question}
+Original question: {question}
 
-    Provide these alternative questions separated by newlines."""
+Provide these alternative questions separated by newlines."""
 )
 
 
@@ -81,13 +89,27 @@ condense_question_prompt = ChatPromptTemplate.from_messages([
 ])
 rephrase_chain = condense_question_prompt | llm | StrOutputParser()
 
-multi_retriever = MultiQueryRetriever.from_llm(
-    retriever=webHookListner.current_retriever,
-    prompt=MULTI_QUERY_PROMPT,
-    llm=llm
+
+
+
+
+reranker_model = HuggingFaceCrossEncoder(
+    model_name="BAAI/bge-reranker-small"
 )
 
+reranker = CrossEncoderReranker(
+    model=reranker_model,
+    top_n=5
+)
+
+compressor = LLMChainExtractor.from_llm(llm)
+
 async def retrieve(state: State):
+    multi_retriever = MultiQueryRetriever.from_llm(
+        retriever=webHookListner.current_retriever,
+        prompt=MULTI_QUERY_PROMPT,
+        llm=llm
+    )
     messages = state.get("chat_history", [])
     trimmed_messages = trimmer.invoke(messages)
 
@@ -112,12 +134,23 @@ async def retrieve(state: State):
         if cid not in seen_ids:
             unique_docs.append(doc)
             seen_ids.add(cid)
+    unique_docs = unique_docs[:8]
+    reranked_docs = await asyncio.to_thread(
+        reranker.compress_documents,
+        unique_docs,
+        standalone_question
+    )
 
-    selected_docs = unique_docs[:10]
-
+    compressed_docs = await asyncio.to_thread(
+        compressor.compress_documents,
+        reranked_docs,
+        standalone_question
+    )
+    selected_docs = compressed_docs[:4]
 
     context = "\n\n".join(
-        [doc.page_content for doc in selected_docs]
+        f"[Source: {doc.metadata.get('source', 'unknown')}]\n{doc.page_content}"
+        for doc in selected_docs
     )
 
     return {
