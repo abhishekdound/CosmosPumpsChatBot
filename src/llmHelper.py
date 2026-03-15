@@ -81,13 +81,13 @@ condense_question_prompt = ChatPromptTemplate.from_messages([
 ])
 rephrase_chain = condense_question_prompt | llm | StrOutputParser()
 
-
+multi_retriever = MultiQueryRetriever.from_llm(
+    retriever=webHookListner.current_retriever,
+    prompt=MULTI_QUERY_PROMPT,
+    llm=llm
+)
 
 async def retrieve(state: State):
-    retriever = webHookListner.current_retriever
-
-
-    multi_retriever = MultiQueryRetriever.from_llm(retriever=retriever, prompt=MULTI_QUERY_PROMPT, llm=llm)
     messages = state.get("chat_history", [])
     trimmed_messages = trimmer.invoke(messages)
 
