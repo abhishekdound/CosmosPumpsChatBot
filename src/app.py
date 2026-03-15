@@ -4,9 +4,7 @@ from llmHelper import graph
 
 @cl.on_chat_start
 async def start():
-    await cl.Message(
-        content="Hello! Ask me anything about the documents."
-    ).send()
+    pass
 
 
 @cl.on_message

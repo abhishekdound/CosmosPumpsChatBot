@@ -47,8 +47,15 @@ class DataAcquisition:
             vector_db.add_documents(documents=chunks)
 
         all_data = vector_db.get(include=["documents", "metadatas"])
+
+        print(f"Total Chunks found: {len(all_data['ids'])}")
+
+        if len(all_data['ids']) > 0:
+            print(f"First Chunk Sample: {all_data['documents'][0][:100]}...")
+        else:
+            print("DATABASE IS TOTALLY EMPTY")
         if not all_data['documents']:
-            print("Database is currently empty. Waiting for crawl data...")
+            print("Database is currently empty.Waiting for crawl data")
             return vector_db.as_retriever(search_kwargs={"k": 3})
         docs = [Document(page_content=d, metadata=m) for d, m in zip(all_data['documents'], all_data['metadatas'])]
 
@@ -56,3 +63,12 @@ class DataAcquisition:
         b_retriever = BM25Retriever.from_documents(docs)
 
         return EnsembleRetriever(retrievers=[b_retriever, v_retriever], weights=[0.5, 0.5])
+
+
+if __name__=='__main__':
+    da = DataAcquisition()
+    test_chunk = Document(
+        page_content="Virat Kohli is an Indian cricketer.",
+        metadata={"source": "test_url"}
+    )
+    da.update_and_get_retriever([test_chunk], 'test_url')

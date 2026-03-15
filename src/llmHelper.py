@@ -38,11 +38,16 @@ load_dotenv()
 
 
 prompt = ChatPromptTemplate.from_messages([
-    ("system", "You are a helpful assistant. Use ONLY the context:\n\n{context}"),
+    ("system", (
+        "You are a strict Retrieval-Augmented Generation (RAG) assistant. "
+        "Use ONLY the provided context to answer the question. "
+        "If the answer is not in the context, exactly say: 'I do not have information about this in my database.' "
+        "Do NOT use your own external knowledge or training data to answer.\n\n"
+        "Context:\n{context}"
+    )),
     MessagesPlaceholder(variable_name="chat_history"),
     ("human", "{question}"),
 ])
-
 from typing import TypedDict , List ,Annotated
 
 class State(TypedDict):
@@ -81,6 +86,7 @@ rephrase_chain = condense_question_prompt | llm | StrOutputParser()
 async def retrieve(state: State):
     retriever = webHookListner.current_retriever
 
+
     multi_retriever = MultiQueryRetriever.from_llm(retriever=retriever, prompt=MULTI_QUERY_PROMPT, llm=llm)
     messages = state.get("chat_history", [])
     trimmed_messages = trimmer.invoke(messages)
@@ -97,6 +103,7 @@ async def retrieve(state: State):
     })
 
     docs = await multi_retriever.ainvoke(standalone_question)
+
 
     seen_ids = set()
     unique_docs = []
@@ -134,6 +141,15 @@ trimmer = trim_messages(
 )
 
 async def generate(state: State):
+    if not state.get("context") or not state["context"].strip():
+        answer = "I do not have information about this in my database."
+        return {
+            "answer": answer,
+            "chat_history": [
+                HumanMessage(content=state["question"]),
+                AIMessage(content=answer)
+            ]
+        }
     messages = state.get("chat_history", [])
     trimmed_messages = trimmer.invoke(messages)
 
