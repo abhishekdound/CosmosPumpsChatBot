@@ -4,7 +4,6 @@ from llmHelper import graph
 
 @cl.on_chat_start
 async def start():
-    cl.user_session.set("memory", [])
     await cl.Message(
         content="Hello! Ask me anything about the documents."
     ).send()
@@ -12,8 +11,10 @@ async def start():
 
 @cl.on_message
 async def main(message: cl.Message):
-
-    memory = cl.user_session.get("memory")
+    config = {
+        "configurable": {"thread_id": cl.user_session.get("id")},
+        "version": "v2"
+    }
     search_step = cl.Step(name="Searching documents...")
     await search_step.send()
     msg = cl.Message(content="")
@@ -23,11 +24,9 @@ async def main(message: cl.Message):
 
     async for event in graph.astream_events(
             {
-                "question": message.content,
-                "chat_history": memory,
-                "sources": []
+                "question": message.content
             },
-            version="v2"
+            config=config
     ):
 
 
@@ -54,6 +53,3 @@ async def main(message: cl.Message):
         full_answer += source_metadata
     await msg.send()
 
-    memory.append(f"User: {message.content}")
-    memory.append(f"Assistant: {full_answer}")
-    cl.user_session.set("memory", memory)

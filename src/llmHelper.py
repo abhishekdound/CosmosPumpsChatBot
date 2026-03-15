@@ -3,9 +3,11 @@ import os
 from dotenv import load_dotenv
 from langchain_core.prompts import ChatPromptTemplate
 from dataAcquisition import DataAcquisition
-from langchain_core.prompts import PromptTemplate
+from langchain_core.prompts import PromptTemplate , ChatPromptTemplate,MessagesPlaceholder
 from langchain_core.output_parsers import StrOutputParser
 from langchain_classic.retrievers.multi_query import MultiQueryRetriever
+from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
+from langgraph.graph.message import add_messages
 
 from llm import llm
 
@@ -46,33 +48,19 @@ else:
 
 
 
-prompt = ChatPromptTemplate.from_template("""
-                                        You are a helpful assistant.
-                                        
-                                        Answer the question using ONLY the provided context.
-                                        
-                                        If the context contains partial information, combine the pieces to give the most complete answer possible.
-                                        
-                                        If the answer is truly missing, say:
-                                        "The information is not available in the provided source."
-                                        
-                                        Chat History:
-                                        {chat_history}
-                                        
-                                        Context:
-                                        {context}
-                                        
-                                        Question:
-                                        {question}
-                                        """)
+prompt = ChatPromptTemplate.from_messages([
+    ("system", "You are a helpful assistant. Use ONLY the context:\n\n{context}"),
+    MessagesPlaceholder(variable_name="chat_history"),
+    ("human", "{question}"),
+])
 
-from typing import TypedDict , List
+from typing import TypedDict , List ,Annotated
 
 class State(TypedDict):
     question: str
     context: str
     answer: str
-    chat_history: List[str]
+    chat_history: Annotated[List[BaseMessage], add_messages]
     sources:  List[str]
 
 
@@ -102,7 +90,15 @@ rephrase_chain = condense_question_prompt | llm | StrOutputParser()
 multi_retriever=MultiQueryRetriever.from_llm(retriever=retriever,prompt=MULTI_QUERY_PROMPT,llm=llm)
 
 async def retrieve(state: State):
-    recent_history = "\n".join(state.get("chat_history", [])[-4:])
+    messages = state.get("chat_history", [])
+    trimmed_messages = trimmer.invoke(messages)
+
+    recent_history = ""
+    for msg in trimmed_messages:
+        role = "Human" if isinstance(msg, HumanMessage) else "Assistant"
+        recent_history += f"{role}: {msg.content}\n"
+
+
     standalone_question = await rephrase_chain.ainvoke({
         "question": state["question"],
         "chat_history": recent_history
@@ -132,18 +128,44 @@ async def retrieve(state: State):
 
 chain = (prompt | llm).with_config({"tags": ["final_response"]})
 
-async def generate(state: State):
 
-    history = "\n".join(state.get("chat_history", [])[-4:])
+
+from langchain_core.messages import trim_messages
+
+
+trimmer = trim_messages(
+    max_tokens=6,
+    strategy="last",
+    token_counter=len,
+    start_on="human",
+    include_system=True,
+)
+
+async def generate(state: State):
+    messages = state.get("chat_history", [])
+    trimmed_messages = trimmer.invoke(messages)
+
+
 
     response = await chain.ainvoke({
         "context": state["context"],
         "question": state["question"],
-        "chat_history": history
+        "chat_history": trimmed_messages
     })
 
-    return {"answer": response.content}
+    return {
+        "answer": response.content,
+        "chat_history": [
+            HumanMessage(content=state["question"]),
+            AIMessage(content=response.content)
+        ]
+    }
+
+
+from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import StateGraph,END
+
+memory = MemorySaver()
 
 graph_builder = StateGraph(State)
 
@@ -156,7 +178,7 @@ graph_builder.add_edge("retrieve", "generate")
 
 graph_builder.add_edge("generate", END)
 
-graph = graph_builder.compile()
+graph = graph_builder.compile(checkpointer=memory)
 
 # result = graph.invoke({
 #     "question": "where is paris?"
