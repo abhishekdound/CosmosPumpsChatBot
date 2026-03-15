@@ -94,7 +94,7 @@ rephrase_chain = condense_question_prompt | llm | StrOutputParser()
 
 
 reranker_model = HuggingFaceCrossEncoder(
-    model_name="BAAI/bge-reranker-small"
+    model_name="cross-encoder/ms-marco-MiniLM-L-6-v2"
 )
 
 reranker = CrossEncoderReranker(
@@ -103,6 +103,16 @@ reranker = CrossEncoderReranker(
 )
 
 compressor = LLMChainExtractor.from_llm(llm)
+
+from langchain_core.messages import trim_messages
+
+trimmer = trim_messages(
+    max_tokens=1000,
+    strategy="last",
+    token_counter='approximate',
+    start_on="human",
+    include_system=True,
+)
 
 async def retrieve(state: State):
     multi_retriever = MultiQueryRetriever.from_llm(
@@ -162,16 +172,10 @@ chain = (prompt | llm).with_config({"tags": ["final_response"]})
 
 
 
-from langchain_core.messages import trim_messages
 
 
-trimmer = trim_messages(
-    max_tokens=1000,
-    strategy="last",
-    token_counter='approximate',
-    start_on="human",
-    include_system=True,
-)
+
+
 
 async def generate(state: State):
     if not state.get("context") or not state["context"].strip():
