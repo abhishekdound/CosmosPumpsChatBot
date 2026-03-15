@@ -8,6 +8,7 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_classic.retrievers.multi_query import MultiQueryRetriever
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
 from langgraph.graph.message import add_messages
+import webHookListner
 
 from llm import llm
 
@@ -30,19 +31,7 @@ warnings.filterwarnings("ignore", category=UserWarning, module="torch.nn.modules
 
 load_dotenv()
 
-current_dir = os.path.dirname(os.path.abspath(__file__))
 
-DB_DIR = os.path.join(current_dir, 'chroma_db')
-
-
-
-data_acquisition = DataAcquisition()
-
-if os.path.exists(DB_DIR) and os.listdir(DB_DIR):
-    retriever = data_acquisition.load_vector_DB()
-else:
-    chunks = data_acquisition.chunks()
-    retriever = data_acquisition.save_vector_DB(chunks)
 
 
 
@@ -87,9 +76,12 @@ condense_question_prompt = ChatPromptTemplate.from_messages([
 ])
 rephrase_chain = condense_question_prompt | llm | StrOutputParser()
 
-multi_retriever=MultiQueryRetriever.from_llm(retriever=retriever,prompt=MULTI_QUERY_PROMPT,llm=llm)
+
 
 async def retrieve(state: State):
+    retriever = webHookListner.current_retriever
+
+    multi_retriever = MultiQueryRetriever.from_llm(retriever=retriever, prompt=MULTI_QUERY_PROMPT, llm=llm)
     messages = state.get("chat_history", [])
     trimmed_messages = trimmer.invoke(messages)
 
@@ -134,9 +126,9 @@ from langchain_core.messages import trim_messages
 
 
 trimmer = trim_messages(
-    max_tokens=6,
+    max_tokens=1000,
     strategy="last",
-    token_counter=len,
+    token_counter='approximate',
     start_on="human",
     include_system=True,
 )

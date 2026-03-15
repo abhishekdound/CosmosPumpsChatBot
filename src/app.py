@@ -11,13 +11,14 @@ async def start():
 
 @cl.on_message
 async def main(message: cl.Message):
+    thread_id = str(cl.user_session.get("id", "default_user"))
     config = {
-        "configurable": {"thread_id": cl.user_session.get("id")},
-        "version": "v2"
+        "configurable": {"thread_id": thread_id}
     }
+
+    msg = cl.Message(content="")
     search_step = cl.Step(name="Searching documents...")
     await search_step.send()
-    msg = cl.Message(content="")
     full_answer = ""
     sources = []
     has_started_streaming = False
@@ -26,7 +27,8 @@ async def main(message: cl.Message):
             {
                 "question": message.content
             },
-            config=config
+            config=config,
+            version="v2"
     ):
 
 
@@ -34,16 +36,17 @@ async def main(message: cl.Message):
             if "final_response" in event.get("tags", []):
                 if not has_started_streaming :
                     await search_step.remove()
+                    await msg.send()
                     has_started_streaming = True
 
 
                 content = getattr(event["data"]["chunk"], "content", "")
 
                 if content:
-                    full_answer += content
                     await msg.stream_token(content)
+                    full_answer += content
 
-        elif event["event"] == "on_chain_end" and event["name"] == "retrieve":
+        if event["event"] == "on_chain_end" and event["name"] == "retrieve":
             sources = event["data"]["output"].get("sources", [])
 
     if sources:
