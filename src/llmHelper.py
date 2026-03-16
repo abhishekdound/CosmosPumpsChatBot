@@ -1,7 +1,6 @@
 import os
 
 from dotenv import load_dotenv
-from langchain_core.prompts import ChatPromptTemplate
 from dataAcquisition import DataAcquisition
 from langchain_core.prompts import PromptTemplate , ChatPromptTemplate,MessagesPlaceholder
 from langchain_core.output_parsers import StrOutputParser
@@ -50,7 +49,7 @@ prompt = ChatPromptTemplate.from_messages([
 "If the answer is not in the context, exactly say: "
 "'I do not have information about this in my database.' "
 "Do NOT use your own external knowledge. "
-"Answer briefly and precisely.\n\n"
+"Answer in a short complete sentence using the context.\n\n"
 "Context:\n{context}"
     )),
     MessagesPlaceholder(variable_name="chat_history"),
@@ -68,19 +67,37 @@ class State(TypedDict):
 
 MULTI_QUERY_PROMPT = PromptTemplate(
     input_variables=["question"],
-    template="""Generate three different versions of the user question
-to retrieve relevant documents from a vector database.
+    template="""
+Generate three alternative search queries that could retrieve
+facts, numbers, statistics, or biographical information
+related to the question.
 
-Original question: {question}
+Original question:
+{question}
 
-Provide these alternative questions separated by newlines."""
+Queries:
+"""
 )
 
 
 condense_question_system_template = """
-Given a chat history and a follow-up question, rephrase the follow-up question 
-to be a standalone question that can be understood without the chat history.
-Do NOT answer the question, just reformulate it.
+You are given a conversation and a follow-up question.
+
+Rewrite the follow-up question so it becomes a standalone question.
+
+Rules:
+- Replace pronouns like he, she, they, him, her, it with the correct entity from the conversation.
+- Include the entity name explicitly.
+- Do NOT answer the question.
+- Only return the rewritten question.
+
+Conversation:
+{chat_history}
+
+Follow-up question:
+{question}
+
+Standalone question:
 """
 
 condense_question_prompt = ChatPromptTemplate.from_messages([
@@ -99,10 +116,9 @@ reranker_model = HuggingFaceCrossEncoder(
 
 reranker = CrossEncoderReranker(
     model=reranker_model,
-    top_n=5
+    top_n=8
 )
 
-compressor = LLMChainExtractor.from_llm(llm)
 
 from langchain_core.messages import trim_messages
 
@@ -128,11 +144,15 @@ async def retrieve(state: State):
         role = "Human" if isinstance(msg, HumanMessage) else "Assistant"
         recent_history += f"{role}: {msg.content}\n"
 
-
     standalone_question = await rephrase_chain.ainvoke({
         "question": state["question"],
         "chat_history": recent_history
     })
+
+    standalone_question = standalone_question.strip()
+
+    if standalone_question.lower() == state["question"].lower():
+        standalone_question = state["question"]
 
     docs = await multi_retriever.ainvoke(standalone_question)
 
@@ -144,19 +164,14 @@ async def retrieve(state: State):
         if cid not in seen_ids:
             unique_docs.append(doc)
             seen_ids.add(cid)
-    unique_docs = unique_docs[:8]
+    unique_docs = unique_docs[:25]
     reranked_docs = await asyncio.to_thread(
         reranker.compress_documents,
         unique_docs,
         standalone_question
     )
 
-    compressed_docs = await asyncio.to_thread(
-        compressor.compress_documents,
-        reranked_docs,
-        standalone_question
-    )
-    selected_docs = compressed_docs[:4]
+    selected_docs = reranked_docs[:4]
 
     context = "\n\n".join(
         f"[Source: {doc.metadata.get('source', 'unknown')}]\n{doc.page_content}"
