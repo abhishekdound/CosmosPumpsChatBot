@@ -35,11 +35,13 @@ async def firecrawl_webhook(request: Request, background_tasks: BackgroundTasks)
                 metadata = page.get("metadata", {})
                 url = metadata.get("sourceURL") or metadata.get("url")
 
-                if markdown and url:
+                if (markdown or html) and url:
                     background_tasks.add_task(sync_data, markdown,html, url)
                     print(f"Queued sync for: {url}")
             else:
                 print(f"Unexpected data format: {type(page)}")
+    elif payload.get("type") == "crawl.completed":
+        print("Crawl completed ")
 
     return {"status": "ok"}
 

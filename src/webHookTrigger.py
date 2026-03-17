@@ -11,7 +11,7 @@ response=requests.post(
     "https://api.firecrawl.dev/v2/crawl",
     headers={"Authorization": f"Bearer {os.getenv('FIRECRAWL_API_KEY')}" , "Content-Type": "application/json"},
     json={
-        "url": "https://en.wikipedia.org/wiki/Virat_Kohli",
+        "url": "https://en.wikipedia.org/wiki/Law",
         "scrapeOptions": {
             "formats": ["markdown", "html"]
         },

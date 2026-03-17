@@ -1,18 +1,42 @@
+import time
+
 import chainlit as cl
 from llmHelper import graph
+import webHookListner
+
+
+
+from dataAcquisition import DataAcquisition
+da=DataAcquisition()
 
 
 @cl.on_chat_start
 async def start():
-    pass
+    thread_id = str(time.time())
+    cl.user_session.set("thread_id", thread_id)
 
 
 @cl.on_message
 async def main(message: cl.Message):
-    thread_id = str(cl.user_session.get("id", "default_user"))
-    config = {
-        "configurable": {"thread_id": thread_id}
-    }
+
+    if message.elements:
+
+        for element in message.elements:
+            if "image" in element.mime:
+
+                with open(element.path, "rb") as f:
+                    image_bytes = f.read()
+
+                retriever = da.update_retriever_from_image_bytes(image_bytes)
+
+                with webHookListner.retriever_lock:
+                    webHookListner.current_retriever = retriever
+
+                await cl.Message(
+                    content=f" Image added to knowledge"
+                ).send()
+
+                return
 
     msg = cl.Message(content="")
     search_step = cl.Step(name="Searching documents...")
@@ -25,7 +49,9 @@ async def main(message: cl.Message):
             {
                 "question": message.content
             },
-            config=config,
+            config={
+                "configurable": {"thread_id": cl.user_session.get("thread_id", "default_user")}
+                    },
             version="v2"
     ):
 

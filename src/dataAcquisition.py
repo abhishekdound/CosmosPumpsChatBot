@@ -12,6 +12,9 @@ from univeral_table_parser import UniversalTableParser
 from bs4 import BeautifulSoup
 from llm_table_to_json import LLMTableToJson
 from llm import llm
+from image_analyzer import ImageAnalyzer
+
+from rag_processor import RAGProcessor
 
 
 class DataAcquisition:
@@ -48,9 +51,12 @@ class DataAcquisition:
     def process_webhook_data(self, markdown_content,html_content, url):
         parser = UniversalTableParser()
         json_converter = TableToJSON()
+        image_analyze=ImageAnalyzer()
         table_sentences = []
+        image_descriptions = []
         if html_content:
             tables = parser.parse_html(html_content)
+
 
             for t in tables:
                 table_json = json_converter.convert(t)
@@ -59,20 +65,24 @@ class DataAcquisition:
 
                 table_sentences.extend(sentences)
 
-        if len(table_sentences) < 5 and html_content:
+            if len(table_sentences) < 3 and len(tables) > 0 and html_content:
 
-            raw_tables = self.extract_raw_tables(html_content)
+                raw_tables = self.extract_raw_tables(html_content)
 
-            for raw in raw_tables:
-                try:
-                    table_json = LLMTableToJson(llm, raw[:2000])
+                for raw in raw_tables:
+                    try:
+                        table_json = LLMTableToJson(llm, raw[:2000])
+
+                        sentences = self.json_to_sentences(table_json, context=url)
+                        table_sentences.extend(sentences)
+
+                    except Exception as e:
+                        print("LLM fallback failed:", e)
 
 
-                    sentences = self.json_to_sentences(table_json, context=url)
-                    table_sentences.extend(sentences)
+            image_descriptions=image_analyze.process_all_images(html_content,url)
 
-                except Exception as e:
-                    print("LLM fallback failed:", e)
+
         if not table_sentences and markdown_content:
             tables = parser.parse_markdown(markdown_content)
 
@@ -82,10 +92,15 @@ class DataAcquisition:
                 sentences = self.json_to_sentences(table_json, context=url)
 
                 table_sentences.extend(sentences)
+
+        table_sentences = list(set(table_sentences))
+        image_descriptions = list(set(image_descriptions))
         enriched_content = (
                 (markdown_content or "") +
                 "\n" +
-                "\n".join(table_sentences)
+                "\n".join(table_sentences) +
+                "\n" +
+                "\n".join(image_descriptions)
         )
         headers_to_split_on = [("#", "Header 1"), ("##", "Header 2")]
         markdown_splitter = MarkdownHeaderTextSplitter(headers_to_split_on=headers_to_split_on)
@@ -145,10 +160,67 @@ class DataAcquisition:
         if b_retriever:
             return EnsembleRetriever(
                 retrievers=[b_retriever, v_retriever],
-                weights=[0.55, 0.45]
+                weights=[0.4, 0.6]
             )
         else:
             return v_retriever
+
+    def update_retriever_from_image_bytes(self, image_bytes, source="user_image"):
+        """
+        Processes image bytes → description → chunk → update retriever
+        """
+
+
+        image_analyzer = ImageAnalyzer()
+        rag_processor = RAGProcessor()
+
+        image_url = image_analyzer.upload_image_to_cloudinary(image_bytes)
+
+        desc=image_analyzer.describe_image_with_vlm(image_url)
+
+        if not desc:
+            print("Image processing failed")
+            return self.vector_db.as_retriever()
+
+        chunks = rag_processor.chunk_content(
+            content=desc,
+            source=f"{source}_{time.time()}"
+        )
+
+        vector_db = self.vector_db
+
+
+        vector_db.add_documents(chunks)
+
+        all_data = vector_db.get(include=["documents", "metadatas"])
+
+        print(f"[IMAGE] Total Chunks: {len(all_data['ids'])}")
+
+        if not all_data['documents']:
+            return vector_db.as_retriever(
+                search_type="mmr",
+                search_kwargs={"k": 8}
+            )
+
+        docs = [
+            Document(page_content=d, metadata=m)
+            for d, m in zip(all_data['documents'], all_data['metadatas'])
+        ]
+
+        v_retriever = vector_db.as_retriever(
+            search_type="mmr",
+            search_kwargs={"k": 15, "fetch_k": 40}
+        )
+
+        b_retriever = BM25Retriever.from_documents(docs)
+        b_retriever.k = 10
+
+        return EnsembleRetriever(
+            retrievers=[b_retriever, v_retriever],
+            weights=[0.4, 0.6]
+        )
+
+
 
 
 if __name__=='__main__':
