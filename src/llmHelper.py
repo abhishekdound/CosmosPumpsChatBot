@@ -42,16 +42,14 @@ load_dotenv()
 
 
 
-prompt = ChatPromptTemplate.from_messages([
-    ("system", (
-        "You are a strict Retrieval-Augmented Generation (RAG) assistant. "
-"Use ONLY the provided context to answer the question. "
-"If the answer is not in the context, exactly say: "
-"'I do not have information about this in my database.' "
-"Do NOT use your own external knowledge. "
-"Answer in a short complete sentence using the context.\n\n"
-"Context:\n{context}"
-    )),
+SYSTEM_PROMPT = """You are an expert Data Analyst. Your goal is to provide accurate answers.
+1. ALWAYS check the provided context first. If the answer is there, use it and cite [Source: name].
+2. If the context is missing details, use your own internal knowledge to provide a complete answer.
+3. If data is structured, format your response using Markdown TABLES.
+4. If you don't know and the context doesn't say, simply state you don't know."""
+
+qa_prompt = ChatPromptTemplate.from_messages([
+    ("system", SYSTEM_PROMPT + "\n\nCONTEXT:\n{context}"),
     MessagesPlaceholder(variable_name="chat_history"),
     ("human", "{question}"),
 ])
@@ -65,46 +63,14 @@ class State(TypedDict):
     sources:  List[str]
 
 
-MULTI_QUERY_PROMPT = PromptTemplate(
-    input_variables=["question"],
-    template="""
-Generate three alternative search queries that could retrieve
-facts, numbers, statistics, or biographical information
-related to the question.
-
-Original question:
-{question}
-
-Queries:
-"""
-)
 
 
-condense_question_system_template = """
-You are given a conversation and a follow-up question.
+REPHRASE_TEMPLATE = """Rewrite the follow-up question to be a standalone search query.
+Chat History: {chat_history}
+Follow-up: {question}
+Standalone Query:"""
+rephrase_chain = PromptTemplate.from_template(REPHRASE_TEMPLATE) | llm | StrOutputParser()
 
-Rewrite the follow-up question so it becomes a standalone question.
-
-Rules:
-- Replace pronouns like he, she, they, him, her, it with the correct entity from the conversation.
-- Include the entity name explicitly.
-- Do NOT answer the question.
-- Only return the rewritten question.
-
-Conversation:
-{chat_history}
-
-Follow-up question:
-{question}
-
-Standalone question:
-"""
-
-condense_question_prompt = ChatPromptTemplate.from_messages([
-    ("system", condense_question_system_template),
-    ("human", "History:\n{chat_history}\n\nQuestion: {question}"),
-])
-rephrase_chain = condense_question_prompt | llm | StrOutputParser()
 
 
 
@@ -116,7 +82,7 @@ reranker_model = HuggingFaceCrossEncoder(
 
 reranker = CrossEncoderReranker(
     model=reranker_model,
-    top_n=8
+    top_n=5
 )
 
 
@@ -129,61 +95,43 @@ trimmer = trim_messages(
     start_on="human",
     include_system=True,
 )
+retriever_lock = webHookListner.retriever_lock
 
 async def retrieve(state: State):
+    """Retrieves chunks from all sources (Web/PDF/Image) and reranks them."""
+    history_text = "\n".join([f"{m.type}: {m.content}" for m in state.get("chat_history", [])[-3:]])
+    standalone_query = await rephrase_chain.ainvoke({"question": state["question"], "chat_history": history_text})
+
+    with retriever_lock:
+        current_retriever = webHookListner.current_retriever
     multi_retriever = MultiQueryRetriever.from_llm(
-        retriever=webHookListner.current_retriever,
-        prompt=MULTI_QUERY_PROMPT,
+        retriever=current_retriever,
         llm=llm
     )
-    messages = state.get("chat_history", [])
-    trimmed_messages = trimmer.invoke(messages)
 
-    recent_history = ""
-    for msg in trimmed_messages:
-        role = "Human" if isinstance(msg, HumanMessage) else "Assistant"
-        recent_history += f"{role}: {msg.content}\n"
-
-    standalone_question = await rephrase_chain.ainvoke({
-        "question": state["question"],
-        "chat_history": recent_history
-    })
-
-    standalone_question = standalone_question.strip()
-
-    if standalone_question.lower() == state["question"].lower():
-        standalone_question = state["question"]
-
-    docs = await multi_retriever.ainvoke(standalone_question)
+    raw_docs = await multi_retriever.ainvoke(standalone_query)
 
 
-    seen_ids = set()
-    unique_docs = []
-    for doc in docs:
-        cid = doc.metadata.get("chunk_id")
-        if cid not in seen_ids:
-            unique_docs.append(doc)
-            seen_ids.add(cid)
-    unique_docs = unique_docs[:25]
-    reranked_docs = await asyncio.to_thread(
-        reranker.compress_documents,
-        unique_docs,
-        standalone_question
-    )
 
-    selected_docs = reranked_docs[:4]
 
-    context = "\n\n".join(
-        f"[Source: {doc.metadata.get('source', 'unknown')}]\n{doc.page_content}"
-        for doc in selected_docs
-    )
+
+    unique_docs = {d.metadata.get("chunk_id", d.page_content): d for d in raw_docs}.values()
+
+    reranked_docs = await asyncio.to_thread(reranker.compress_documents, list(unique_docs), standalone_query)
+
+    context_parts = []
+    source_names = []
+    for doc in reranked_docs:
+        src = doc.metadata.get("source", "Unknown")
+        context_parts.append(f"[SOURCE: {src}]\n{doc.page_content}")
+        source_names.append(src)
 
     return {
-        "context": context,
-        "sources": [doc.metadata.get("source", "Unknown") for doc in selected_docs]
+        "context": "\n\n".join(context_parts),
+        "sources": list(set(source_names))
     }
 
-chain = (prompt | llm).with_config({"tags": ["final_response"]})
+chain = (qa_prompt | llm).with_config({"tags": ["final_response"]})
 
 
 
@@ -193,32 +141,19 @@ chain = (prompt | llm).with_config({"tags": ["final_response"]})
 
 
 async def generate(state: State):
-    if not state.get("context") or not state["context"].strip():
-        answer = "I do not have information about this in my database."
-        return {
-            "answer": answer,
-            "chat_history": [
-                HumanMessage(content=state["question"]),
-                AIMessage(content=answer)
-            ]
-        }
-    messages = state.get("chat_history", [])
-    trimmed_messages = trimmer.invoke(messages)
+    """Generates response using both context and LLM internal knowledge."""
 
-
+    trimmed_history = trimmer.invoke(state.get("chat_history", []))
 
     response = await chain.ainvoke({
         "context": state["context"],
         "question": state["question"],
-        "chat_history": trimmed_messages
+        "chat_history": trimmed_history
     })
 
     return {
         "answer": response.content,
-        "chat_history": [
-            HumanMessage(content=state["question"]),
-            AIMessage(content=response.content)
-        ]
+        "chat_history": [AIMessage(content=response.content)]
     }
 
 

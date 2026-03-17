@@ -1,23 +1,27 @@
 from fastapi import FastAPI, Request, BackgroundTasks
 from dataAcquisition import DataAcquisition
 import uvicorn
+import threading
 
 
 import threading
 retriever_lock = threading.Lock()
-
-app = FastAPI()
 da = DataAcquisition()
-
 current_retriever = da.vector_db.as_retriever(
     search_type="mmr",
-    search_kwargs={"k": 8, "fetch_k": 20}
+    search_kwargs={"k": 10, "fetch_k": 30}
 )
+
+app = FastAPI()
+
 
 
 @app.post("/webhook/firecrawl")
 async def firecrawl_webhook(request: Request, background_tasks: BackgroundTasks):
-
+    """
+        Endpoint for Firecrawl webhooks.
+        Firecrawl sends a POST request whenever a page crawl is completed.
+    """
     payload = await request.json()
 
 
@@ -39,6 +43,10 @@ async def firecrawl_webhook(request: Request, background_tasks: BackgroundTasks)
     return {"status": "ok"}
 
 def sync_data(markdown, url):
+    """
+        Heavy-lifting function: Chunks markdown, updates ChromaDB, and
+        refreshes the Global Ensemble Retriever.
+    """
     global current_retriever
 
     try:
