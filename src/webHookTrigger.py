@@ -12,6 +12,9 @@ response=requests.post(
     headers={"Authorization": f"Bearer {os.getenv('FIRECRAWL_API_KEY')}" , "Content-Type": "application/json"},
     json={
         "url": "https://en.wikipedia.org/wiki/Virat_Kohli",
+        "scrapeOptions": {
+            "formats": ["markdown", "html"]
+        },
         "webhook": { "url": WEBHOOK_URL , "events": ["page", "completed"] }
     }
 )
