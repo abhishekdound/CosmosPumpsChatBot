@@ -174,16 +174,24 @@ class DataAcquisition:
         image_analyzer = ImageAnalyzer()
         rag_processor = RAGProcessor()
 
-        image_url = image_analyzer.upload_image_to_cloudinary(image_bytes)
+        extracted_text, confidence = image_analyzer.extract_text_from_image_bytes(image_bytes)
 
-        desc=image_analyzer.describe_image_with_vlm(image_url)
+        print("\n=== OCR OUTPUT ===\n", extracted_text)
+        print("OCR confidence:", confidence)
 
-        if not desc:
+        if len(extracted_text.strip()) < 20 or confidence < 0.6:
+            print(" OCR weak → using VLM fallback")
+
+            extracted_text = image_analyzer.describe_image_with_vlm(image_bytes)
+
+            print("\n=== VLM OUTPUT ===\n", extracted_text)
+
+        if not extracted_text.strip():
             print("Image processing failed")
             return self.vector_db.as_retriever()
 
         chunks = rag_processor.chunk_content(
-            content=desc,
+            content=extracted_text,
             source=f"{source}_{time.time()}"
         )
 
