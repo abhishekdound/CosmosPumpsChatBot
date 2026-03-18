@@ -36,7 +36,6 @@ async def main(message: cl.Message):
                     content=f" Image added to knowledge"
                 ).send()
 
-                return
 
     msg = cl.Message(content="")
     search_step = cl.Step(name="Searching documents...")
