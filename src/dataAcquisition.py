@@ -165,7 +165,7 @@ class DataAcquisition:
         else:
             return v_retriever
 
-    def update_retriever_from_image_bytes(self, image_bytes, source="user_image"):
+    async def update_retriever_from_image_bytes(self, image_bytes, source="user_image"):
         """
         Processes image bytes → description → chunk → update retriever
         """
@@ -174,21 +174,13 @@ class DataAcquisition:
         image_analyzer = ImageAnalyzer()
         rag_processor = RAGProcessor()
 
-        extracted_text, confidence = image_analyzer.extract_text_from_image_bytes(image_bytes)
+        extracted_text = await image_analyzer.describe_image_with_vlm(image_bytes)
 
-        print("\n=== OCR OUTPUT ===\n", extracted_text)
-        print("OCR confidence:", confidence)
-
-        if len(extracted_text.strip()) < 20 or confidence < 0.6:
-            print(" OCR weak → using VLM fallback")
-
-            extracted_text = image_analyzer.describe_image_with_vlm(image_bytes)
-
-            print("\n=== VLM OUTPUT ===\n", extracted_text)
-
-        if not extracted_text.strip():
-            print("Image processing failed")
+        if not extracted_text or not extracted_text.strip():
+            print("VLM processing failed or returned empty content")
             return self.vector_db.as_retriever()
+
+        print("\n=== VLM OUTPUT (Markdown/Text) ===\n", extracted_text)
 
         chunks = rag_processor.chunk_content(
             content=extracted_text,
@@ -228,7 +220,17 @@ class DataAcquisition:
             weights=[0.4, 0.6]
         )
 
-
+    async def update_retriever_from_document_bytes(self, doc_bytes, mime_type, filename):
+        if mime_type == "application/pdf":
+            # use pypdf or pdfplumber to extract text
+            pass
+        elif mime_type == "text/plain":
+            text = doc_bytes.decode("utf-8")
+            # chunk and embed text
+            pass
+        elif "wordprocessingml" in mime_type:
+            # use python-docx to extract text
+            pass
 
 
 if __name__=='__main__':

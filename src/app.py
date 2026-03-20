@@ -27,13 +27,38 @@ async def main(message: cl.Message):
                 with open(element.path, "rb") as f:
                     image_bytes = f.read()
 
-                retriever = da.update_retriever_from_image_bytes(image_bytes)
+                retriever = await da.update_retriever_from_image_bytes(image_bytes)
 
                 with webHookListner.retriever_lock:
                     webHookListner.current_retriever = retriever
 
                 await cl.Message(
                     content=f" Image added to knowledge"
+                ).send()
+
+
+            elif element.mime in [
+                "application/pdf",
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                "text/plain"
+            ]:
+                with open(element.path, "rb") as f:
+                    doc_bytes = f.read()
+
+                retriever = await da.update_retriever_from_document_bytes(
+                    doc_bytes,
+                    mime_type=element.mime,
+                    filename=element.name
+                )
+
+                with webHookListner.retriever_lock:
+                    webHookListner.current_retriever = retriever
+
+                await cl.Message(content=f" Document **{element.name}** added to knowledge.").send()
+
+            else:
+                await cl.Message(
+                    content=f"️ Unsupported file type: `{element.mime}`. Please upload an image, PDF, DOCX, or TXT."
                 ).send()
 
 
