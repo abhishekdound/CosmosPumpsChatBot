@@ -1,7 +1,6 @@
 import os
 
 from dotenv import load_dotenv
-from dataAcquisition import DataAcquisition
 from langchain_core.prompts import PromptTemplate , ChatPromptTemplate,MessagesPlaceholder
 from langchain_core.output_parsers import StrOutputParser
 from langchain_classic.retrievers.multi_query import MultiQueryRetriever
@@ -10,7 +9,6 @@ from langgraph.graph.message import add_messages
 import webHookListner
 import asyncio
 
-from langchain_classic.retrievers.document_compressors import LLMChainExtractor
 
 from langchain_community.cross_encoders import HuggingFaceCrossEncoder
 from langchain_classic.retrievers.document_compressors import CrossEncoderReranker
@@ -44,12 +42,14 @@ load_dotenv()
 
 SYSTEM_PROMPT = """You are an expert Data Analyst. Your goal is to provide accurate answers.
 1. ALWAYS check the provided context first. If the answer is there, use it and cite [Source: name].
-2. If the context is missing details, use your own internal knowledge to provide a complete answer.
-3. If data is structured, format your response using Markdown TABLES.
-4. If you don't know and the context doesn't say, simply state you don't know."""
+2. If UPLOADED DOCUMENT section exists, answer from it FIRST before anything else.
+3. Only use RETRIEVED CONTEXT if the uploaded document doesn't contain the answer.
+4. If the context is missing details, use your own internal knowledge to provide a complete answer.
+5. If data is structured, format your response using Markdown TABLES.
+6. If you don't know and the context doesn't say, simply state you don't know."""
 
 qa_prompt = ChatPromptTemplate.from_messages([
-    ("system", SYSTEM_PROMPT + "\n\nCONTEXT:\n{context}"),
+    ("system", SYSTEM_PROMPT + "\n\n{upload_block}\n\nRETRIEVED CONTEXT:\n{context}"),
     MessagesPlaceholder(variable_name="chat_history"),
     ("human", "{question}"),
 ])
@@ -61,6 +61,9 @@ class State(TypedDict):
     answer: str
     chat_history: Annotated[List[BaseMessage], add_messages]
     sources:  List[str]
+    last_upload_content: str
+    last_upload_name: str
+    session_id:str
 
 
 
@@ -91,19 +94,32 @@ from langchain_core.messages import trim_messages
 trimmer = trim_messages(
     max_tokens=1000,
     strategy="last",
-    token_counter='approximate',
+    token_counter=llm,
     start_on="human",
     include_system=True,
 )
-retriever_lock = webHookListner.retriever_lock
 
 async def retrieve(state: State):
     """Retrieves chunks from all sources (Web/PDF/Image) and reranks them."""
-    history_text = "\n".join([f"{m.type}: {m.content}" for m in state.get("chat_history", [])[-3:]])
-    standalone_query = await rephrase_chain.ainvoke({"question": state["question"], "chat_history": history_text})
+    history = state.get("chat_history", [])
+    session_id = state.get("session_id", "default")
 
-    with retriever_lock:
-        current_retriever = webHookListner.current_retriever
+    if history:
+        history_text = "\n".join([f"{m.type}: {m.content}" for m in history[-3:]])
+        standalone_query = await rephrase_chain.ainvoke({
+            "question": state["question"],
+            "chat_history": history_text
+        })
+    else:
+        standalone_query = state["question"]
+
+    current_retriever = webHookListner.get_retriever_for_session(session_id)
+
+    if current_retriever is None:
+        return {
+            "context": "No documents available yet.",
+            "sources": []
+        }
     multi_retriever = MultiQueryRetriever.from_llm(
         retriever=current_retriever,
         llm=llm
@@ -111,14 +127,23 @@ async def retrieve(state: State):
 
     raw_docs = await multi_retriever.ainvoke(standalone_query)
 
+    if not raw_docs:
+        return {
+            "context": "No relevant documents found.",
+            "sources": []
+        }
 
 
-
-
-    unique_docs = {d.metadata.get("chunk_id", d.page_content): d for d in raw_docs}.values()
+    unique_docs = list({d.metadata.get("chunk_id", d.page_content): d for d in raw_docs}.values())
 
     reranked_docs = await asyncio.to_thread(reranker.compress_documents, list(unique_docs), standalone_query)
 
+    if not reranked_docs:
+        reranked_docs = unique_docs[:5]
+
+    reranked_docs.sort(
+        key=lambda d: 0 if session_id in d.metadata.get("source", "") else 1
+    )
     context_parts = []
     source_names = []
     for doc in reranked_docs:
@@ -144,16 +169,32 @@ async def generate(state: State):
     """Generates response using both context and LLM internal knowledge."""
 
     trimmed_history = trimmer.invoke(state.get("chat_history", []))
+    upload_content = state.get("last_upload_content", "").strip()
+    upload_name = state.get("last_upload_name", "Uploaded Document")
+
+    if upload_content:
+        truncated = upload_content[:3000]
+        upload_block = f"""UPLOADED DOCUMENT ({upload_name}) — HIGHEST PRIORITY:
+    \"\"\"
+    {truncated}
+    \"\"\"
+    Answer from this first before using any other source."""
+    else:
+        upload_block = ""
 
     response = await chain.ainvoke({
         "context": state["context"],
         "question": state["question"],
-        "chat_history": trimmed_history
+        "chat_history": trimmed_history,
+        "upload_block": upload_block,
     })
 
     return {
         "answer": response.content,
-        "chat_history": [AIMessage(content=response.content)]
+        "chat_history": [
+            HumanMessage(content=state["question"]),
+            AIMessage(content=response.content)
+        ]
     }
 
 

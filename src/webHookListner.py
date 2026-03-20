@@ -1,16 +1,41 @@
 from fastapi import FastAPI, Request, BackgroundTasks
 from dataAcquisition import DataAcquisition
 import uvicorn
-import threading
-
+import asyncio
 
 import threading
 retriever_lock = threading.Lock()
 da = DataAcquisition()
-current_retriever = da.vector_db.as_retriever(
-    search_type="mmr",
-    search_kwargs={"k": 10, "fetch_k": 30}
-)
+crawl_retriever = da.build_retriever(session_id=None)
+
+session_retrievers: dict = {}
+
+
+def get_retriever_for_session(session_id: str):
+    with retriever_lock:
+        needs_copy = session_id not in session_retrievers
+        retriever = session_retrievers.get(session_id, crawl_retriever)
+
+    if needs_copy:
+        da.copy_crawl_to_session("pending", session_id)
+        retriever = da.build_retriever(session_id)
+        with retriever_lock:
+            session_retrievers[session_id] = retriever
+
+    return retriever
+
+
+def set_retriever_for_session(session_id: str, retriever):
+    with retriever_lock:
+        session_retrievers[session_id] = retriever
+
+
+def clear_session(session_id: str):
+    """Called on chat end — removes session retriever and clears session DB."""
+    with retriever_lock:
+        session_retrievers.pop(session_id, None)
+    da.clear_session(session_id)
+    print(f"[SESSION] Cleaned up {session_id}")
 
 app = FastAPI()
 
@@ -36,7 +61,7 @@ async def firecrawl_webhook(request: Request, background_tasks: BackgroundTasks)
                 url = metadata.get("sourceURL") or metadata.get("url")
 
                 if (markdown or html) and url:
-                    background_tasks.add_task(sync_data, markdown,html, url)
+                    background_tasks.add_task(run_sync_data, markdown,html, url)
                     print(f"Queued sync for: {url}")
             else:
                 print(f"Unexpected data format: {type(page)}")
@@ -45,18 +70,29 @@ async def firecrawl_webhook(request: Request, background_tasks: BackgroundTasks)
 
     return {"status": "ok"}
 
-def sync_data(markdown,html, url):
+
+def run_sync_data(markdown, html, url):
+    asyncio.run(sync_data(markdown, html, url))
+
+async def sync_data(markdown,html, url):
     """
         Heavy-lifting function: Chunks markdown, updates ChromaDB, and
         refreshes the Global Ensemble Retriever.
     """
-    global current_retriever
 
     try:
-        chunks = da.process_webhook_data(markdown, html,url)
-
+        chunks =await da.process_webhook_data(markdown, html,url)
         with retriever_lock:
-            current_retriever = da.update_and_get_retriever(chunks, url)
+            active_sessions = list(session_retrievers.keys())
+
+        if not active_sessions:
+            da.update_and_get_retriever(chunks, url, "pending")
+            print(f"No active sessions — stored as pending crawl")
+        else:
+            for sid in active_sessions:
+                retriever = da.update_and_get_retriever(chunks, url, sid)
+                with retriever_lock:
+                    session_retrievers[sid] = retriever
 
         print(f"Chatbot updated with fresh data from {url}")
 

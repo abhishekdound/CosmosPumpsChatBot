@@ -5,7 +5,6 @@ from llmHelper import graph
 import webHookListner
 
 
-
 from dataAcquisition import DataAcquisition
 da=DataAcquisition()
 
@@ -18,7 +17,7 @@ async def start():
 
 @cl.on_message
 async def main(message: cl.Message):
-
+    thread_id = cl.user_session.get("thread_id", "default")
     if message.elements:
 
         for element in message.elements:
@@ -27,10 +26,12 @@ async def main(message: cl.Message):
                 with open(element.path, "rb") as f:
                     image_bytes = f.read()
 
-                retriever = await da.update_retriever_from_image_bytes(image_bytes)
+                extracted,retriever = await da.update_retriever_from_image_bytes(image_bytes,session_id=thread_id)
 
-                with webHookListner.retriever_lock:
-                    webHookListner.current_retriever = retriever
+                webHookListner.set_retriever_for_session(thread_id, retriever)
+
+                cl.user_session.set("last_upload_content", extracted)
+                cl.user_session.set("last_upload_name", element.name or "uploaded image")
 
                 await cl.Message(
                     content=f" Image added to knowledge"
@@ -48,11 +49,15 @@ async def main(message: cl.Message):
                 retriever = await da.update_retriever_from_document_bytes(
                     doc_bytes,
                     mime_type=element.mime,
-                    filename=element.name
+                    filename=element.name,
+                    session_id=thread_id
                 )
 
-                with webHookListner.retriever_lock:
-                    webHookListner.current_retriever = retriever
+                webHookListner.set_retriever_for_session(thread_id, retriever)
+
+                extracted = da.extract_text_from_pdf(doc_bytes) if "pdf" in element.mime else da.extract_text_from_docx(doc_bytes)
+                cl.user_session.set("last_upload_content", extracted)
+                cl.user_session.set("last_upload_name", element.name)
 
                 await cl.Message(content=f" Document **{element.name}** added to knowledge.").send()
 
@@ -61,7 +66,8 @@ async def main(message: cl.Message):
                     content=f"️ Unsupported file type: `{element.mime}`. Please upload an image, PDF, DOCX, or TXT."
                 ).send()
 
-
+    last_upload = cl.user_session.get("last_upload_content", "") if message.elements else ""
+    last_upload_name = cl.user_session.get("last_upload_name", "") if message.elements else ""
     msg = cl.Message(content="")
     search_step = cl.Step(name="Searching documents...")
     await search_step.send()
@@ -71,7 +77,10 @@ async def main(message: cl.Message):
 
     async for event in graph.astream_events(
             {
-                "question": message.content
+                "question": message.content,
+                "session_id":thread_id,
+                "last_upload_content": last_upload,
+                "last_upload_name": last_upload_name
             },
             config={
                 "configurable": {"thread_id": cl.user_session.get("thread_id", "default_user")}
@@ -102,5 +111,12 @@ async def main(message: cl.Message):
         source_metadata = f"\n\n*Sources: {unique_sources}*"
         await msg.stream_token(source_metadata)
         full_answer += source_metadata
-    await msg.send()
+    await msg.update()
+
+@cl.on_chat_end
+async def end():
+    thread_id = cl.user_session.get("thread_id")
+    if thread_id:
+        webHookListner.clear_session(thread_id)
+        print(f"[APP] Session {thread_id} cleaned up")
 
