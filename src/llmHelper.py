@@ -15,6 +15,8 @@ from langchain_classic.retrievers.document_compressors import CrossEncoderRerank
 
 from llm import llm
 
+from typing import NotRequired
+
 
 
 
@@ -61,8 +63,8 @@ class State(TypedDict):
     answer: str
     chat_history: Annotated[List[BaseMessage], add_messages]
     sources:  List[str]
-    last_upload_content: str
-    last_upload_name: str
+    last_upload_content: NotRequired[str]
+    last_upload_name: NotRequired[str]
     session_id:str
 
 
@@ -99,6 +101,16 @@ trimmer = trim_messages(
     include_system=True,
 )
 
+MULTI_QUERY_PROMPT = PromptTemplate(
+    input_variables=["question"],
+    template=(
+        "Generate 2 different search queries for the question below.\n"
+        "Output only the queries, one per line, no numbering.\n"
+        "Question: {question}\n"
+        "Queries:"
+    )
+)
+
 async def retrieve(state: State):
     """Retrieves chunks from all sources (Web/PDF/Image) and reranks them."""
     history = state.get("chat_history", [])
@@ -122,7 +134,8 @@ async def retrieve(state: State):
         }
     multi_retriever = MultiQueryRetriever.from_llm(
         retriever=current_retriever,
-        llm=llm
+        llm=llm,
+        prompt=MULTI_QUERY_PROMPT
     )
 
     raw_docs = await multi_retriever.ainvoke(standalone_query)
@@ -142,7 +155,10 @@ async def retrieve(state: State):
         reranked_docs = unique_docs[:5]
 
     reranked_docs.sort(
-        key=lambda d: 0 if session_id in d.metadata.get("source", "") else 1
+        key=lambda d: 0 if (
+                "user_image" in d.metadata.get("source", "") or
+                f"_{session_id}" in d.metadata.get("source", "")
+        ) else 1
     )
     context_parts = []
     source_names = []
@@ -168,17 +184,17 @@ chain = (qa_prompt | llm).with_config({"tags": ["final_response"]})
 async def generate(state: State):
     """Generates response using both context and LLM internal knowledge."""
 
-    trimmed_history = trimmer.invoke(state.get("chat_history", []))
+    trimmed_history = await trimmer.ainvoke(state.get("chat_history", []))
     upload_content = state.get("last_upload_content", "").strip()
     upload_name = state.get("last_upload_name", "Uploaded Document")
 
     if upload_content:
         truncated = upload_content[:3000]
-        upload_block = f"""UPLOADED DOCUMENT ({upload_name}) — HIGHEST PRIORITY:
-    \"\"\"
-    {truncated}
-    \"\"\"
-    Answer from this first before using any other source."""
+        upload_block = (
+            f"UPLOADED DOCUMENT ({upload_name}) — HIGHEST PRIORITY:\n"
+            f'"""\n{truncated}\n"""\n'
+            f"Answer from this first before using any other source."
+        )
     else:
         upload_block = ""
 
@@ -199,10 +215,12 @@ async def generate(state: State):
 
 
 from langgraph.checkpoint.memory import MemorySaver
+# from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.graph import StateGraph,END
 
-memory = MemorySaver()
 
+# memory = AsyncSqliteSaver.from_conn_string("./checkpoints.db")
+memory = MemorySaver()
 graph_builder = StateGraph(State)
 
 graph_builder.add_node("retrieve", retrieve)
