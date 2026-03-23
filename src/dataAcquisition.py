@@ -1,3 +1,4 @@
+import asyncio
 import os
 import io
 from langchain_text_splitters import MarkdownHeaderTextSplitter
@@ -8,14 +9,15 @@ from langchain_community.retrievers import BM25Retriever
 from langchain_classic.retrievers import EnsembleRetriever
 import time, hashlib
 from langchain_core.documents import Document
-from table_to_json import TableToJSON
-from univeral_table_parser import UniversalTableParser
+from src.table_to_json import TableToJSON
+from src.univeral_table_parser import UniversalTableParser
 from bs4 import BeautifulSoup
-from llm_table_to_json import LLMTableToJson
-from llm import llm
-from image_analyzer import ImageAnalyzer
+from src.llm_table_to_json import LLMTableToJson
+from src.llm import llm
+from src.image_analyzer import ImageAnalyzer
+from langchain_google_genai import GoogleGenerativeAIEmbeddings
 
-from rag_processor import RAGProcessor
+from src.rag_processor import RAGProcessor
 
 import fitz
 import pdfplumber
@@ -26,6 +28,7 @@ class DataAcquisition:
 
     def __init__(self):
 
+        self.image_analyzer = ImageAnalyzer()
         self.embeddings = HuggingFaceEmbeddings(
             model_name="BAAI/bge-small-en",
             model_kwargs={'device': 'cpu'},
@@ -84,16 +87,6 @@ class DataAcquisition:
         """Shared helper — builds EnsembleRetriever from current Chroma state."""
 
         all_docs = []
-        crawl_docs = []
-        if session_id:
-            crawl_db = self._get_session_db(f"crawl_{session_id}")
-            crawl_data = crawl_db.get(include=["documents", "metadatas"])
-            if crawl_data["documents"]:
-                crawl_docs = [
-                    Document(page_content=d, metadata=m)
-                    for d, m in zip(crawl_data["documents"], crawl_data["metadatas"])
-                ]
-                all_docs += crawl_docs
 
         session_docs = []
         if session_id:
@@ -106,7 +99,7 @@ class DataAcquisition:
                 ]
                 all_docs += session_docs
 
-        print(f"[RETRIEVER] Crawl: {len(crawl_docs)} | Session: {len(session_docs)}")
+        print(f"[RETRIEVER]  Session: {len(session_docs)}")
 
         if not all_docs:
             empty_db = self._get_session_db("empty")
@@ -120,13 +113,6 @@ class DataAcquisition:
         retrievers.append(b_retriever)
         weights.append(0.2)
 
-        if crawl_docs and session_id:
-            v_crawl = self._get_session_db(f"crawl_{session_id}").as_retriever(
-                search_type="mmr",
-                search_kwargs={"k": 15, "fetch_k": 40}
-            )
-            retrievers.append(v_crawl)
-            weights.append(0.2)
 
         if session_docs:
             session_db = self._get_session_db(session_id)
@@ -170,7 +156,7 @@ class DataAcquisition:
 
     async def _extract_images_from_pdf(self, doc_bytes: bytes, filename: str) -> list[str]:
         """Extract embedded images from PDF and run VLM on each."""
-        image_analyzer = ImageAnalyzer()
+
         image_descriptions = []
 
         pdf = fitz.open(stream=doc_bytes, filetype="pdf")
@@ -189,7 +175,7 @@ class DataAcquisition:
                         continue
 
                     print(f"PDF Processing image {img_index + 1} on page {page_num + 1}...")
-                    extracted_text = await image_analyzer.describe_image_with_vlm(image_bytes)
+                    extracted_text = await self.image_analyzer.describe_image_with_vlm(image_bytes)
 
                     if extracted_text and "NO_TEXT_FOUND" not in extracted_text:
                         entry = (
@@ -237,7 +223,7 @@ class DataAcquisition:
 
     async def _extract_images_from_docx(self, doc_bytes: bytes, filename: str) -> list[str]:
         """Extract embedded images from DOCX and run VLM on each."""
-        image_analyzer = ImageAnalyzer()
+
         image_descriptions = []
 
         docx = DocxDocument(io.BytesIO(doc_bytes))
@@ -253,7 +239,7 @@ class DataAcquisition:
                     continue
 
                 print(f"[DOCX] Processing embedded image from {filename}...")
-                extracted_text = await image_analyzer.describe_image_with_vlm(image_bytes)
+                extracted_text = await self.image_analyzer.describe_image_with_vlm(image_bytes)
 
                 if extracted_text and "NO_TEXT_FOUND" not in extracted_text:
                     entry = (
@@ -324,88 +310,113 @@ class DataAcquisition:
 
         return self.build_retriever(session_id)
 
-
-    async def process_webhook_data(self, markdown_content, html_content, url):
+    async def process_webhook_data(self, markdown_content, html_content, url, image_scan=True, use_llm_tables=True):
         parser = UniversalTableParser()
         json_converter = TableToJSON()
-        image_analyze = ImageAnalyzer()
         table_sentences = []
         image_descriptions = []
 
         if html_content:
-            tables = parser.parse_html(html_content)
-            for t in tables:
-                table_json = json_converter.convert(t)
-                sentences = self.json_to_sentences(table_json, context=url)
-                table_sentences.extend(sentences)
+            def parse_tables():
+                tables = parser.parse_html(html_content)
+                sentences = []
+                for t in tables:
+                    table_json = json_converter.convert(t)
+                    sentences.extend(self.json_to_sentences(table_json, context=url))
+                return sentences, tables
 
-            if len(table_sentences) < 3 and len(tables) > 0 and html_content:
+            print("[WEBHOOK] Starting table parse...")
+            table_sentences, tables = await asyncio.to_thread(parse_tables)
+            print(f"[WEBHOOK] Tables done: {len(table_sentences)} sentences, {len(tables)} tables")
+
+            if len(table_sentences) < 3 and len(tables) > 0 and use_llm_tables:
+                print("[WEBHOOK] Starting LLM table fallback...")
                 raw_tables = self.extract_raw_tables(html_content)
                 for raw in raw_tables:
                     try:
                         table_json = LLMTableToJson(llm, raw[:2000])
                         sentences = self.json_to_sentences(table_json, context=url)
                         table_sentences.extend(sentences)
+                        print("[WEBHOOK] LLM fallback done")
                     except Exception as e:
                         print("LLM fallback failed:", e)
 
-            image_descriptions =await image_analyze.process_all_images(html_content, url)
+            if image_scan:
+                image_descriptions = await self.image_analyzer.process_all_images(html_content, url)
 
         if not table_sentences and markdown_content:
-            tables = parser.parse_markdown(markdown_content)
-            for t in tables:
-                table_json = json_converter.convert(t)
-                sentences = self.json_to_sentences(table_json, context=url)
-                table_sentences.extend(sentences)
+            def parse_md_tables():
+                tables = parser.parse_markdown(markdown_content)
+                sentences = []
+                for t in tables:
+                    table_json = json_converter.convert(t)
+                    sentences.extend(self.json_to_sentences(table_json, context=url))
+                return sentences
+
+            table_sentences = await asyncio.to_thread(parse_md_tables)
 
         table_sentences = list(set(table_sentences))
         image_descriptions = list(set(image_descriptions))
 
         enriched_content = (
-            (markdown_content or "") + "\n" +
-            "\n".join(table_sentences) + "\n" +
-            "\n".join(image_descriptions)
+                (markdown_content or "") + "\n" +
+                "\n".join(table_sentences) + "\n" +
+                "\n".join(image_descriptions)
         )
 
-        headers_to_split_on = [("#", "Header 1"), ("##", "Header 2")]
-        markdown_splitter = MarkdownHeaderTextSplitter(
-            headers_to_split_on=headers_to_split_on
-        )
-        header_splits = markdown_splitter.split_text(enriched_content)
+        def split_content():
+            headers_to_split_on = [("#", "Header 1"), ("##", "Header 2")]
+            header_splits = MarkdownHeaderTextSplitter(
+                headers_to_split_on=headers_to_split_on
+            ).split_text(enriched_content)
 
-        text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=600,
-            chunk_overlap=100,
-            separators=["\n\n", "\n", ".", " ", ""]
-        )
-        final_chunks = text_splitter.split_documents(header_splits)
+            text_splitter = RecursiveCharacterTextSplitter(
+                chunk_size=1200,
+                chunk_overlap=100,
+                separators=["\n\n", "\n", ".", " ", ""]
+            )
+            chunks = text_splitter.split_documents(header_splits)
 
-        for i, chunk in enumerate(final_chunks):
-            chunk.metadata.update({
-                "source": url,
-                "last_updated": int(time.time()),
-                "chunk_id": f"{hashlib.md5(url.encode()).hexdigest()}_{i}"
-            })
-        return final_chunks
+            for i, chunk in enumerate(chunks):
+                chunk.metadata.update({
+                    "source": url,
+                    "last_updated": int(time.time()),
+                    "chunk_id": f"{hashlib.md5(url.encode()).hexdigest()}_{i}"
+                })
+            return chunks
 
-    def update_and_get_retriever(self, chunks, url, session_id: str):
-        crawl_key = f"crawl_{session_id}"
-        crawl_db = self._get_session_db(crawl_key)
+        print("[WEBHOOK] Starting split...")
+        result = await asyncio.to_thread(split_content)
+        print(f"[WEBHOOK] Split done: {len(result)} chunks")
+        return result
 
-        existing = crawl_db.get(where={"source": url})
+    async def update_and_get_retriever(self, chunks, url, session_id: str, progress_callback=None):
+        session_db = self._get_session_db(session_id)
+
+        # ✅ Run delete in thread
+        existing = await asyncio.to_thread(session_db.get, where={"source": url})
         if existing["ids"]:
-            crawl_db.delete(ids=existing["ids"])
+            await asyncio.to_thread(session_db.delete, ids=existing["ids"])
 
         if chunks:
-            crawl_db.add_documents(documents=chunks)
+            # ✅ Embed in batches
+            batch_size = 100
+            total = (len(chunks) + batch_size - 1) // batch_size
+            for i in range(0, len(chunks), batch_size):
+                batch = chunks[i:i + batch_size]
+                batch_num = i // batch_size + 1
+                await asyncio.to_thread(session_db.add_documents, batch)
+                print(f"[EMBED] Batch {batch_num}/{total}")
+                if progress_callback:
+                    await progress_callback(batch_num, total)  # ✅ UI heartbeat
 
-        return self.build_retriever(session_id=session_id)
+        return await asyncio.to_thread(self.build_retriever, session_id)
 
     async def update_retriever_from_image_bytes(self, image_bytes,session_id:str, source="user_image"):
-        image_analyzer = ImageAnalyzer()
+
         rag_processor = RAGProcessor()
 
-        extracted_text = await image_analyzer.describe_image_with_vlm(image_bytes)
+        extracted_text = await self.image_analyzer.describe_image_with_vlm(image_bytes)
 
         if not extracted_text or not extracted_text.strip():
             print("VLM processing failed or returned empty content")
@@ -423,25 +434,6 @@ class DataAcquisition:
         print(f"[IMAGE] Added {len(chunks)} chunks to session {session_id}")
         return extracted_text,self.build_retriever(session_id)
 
-    def copy_crawl_to_session(self, from_session: str, to_session: str):
-        try:
-            src_db = self._get_session_db(f"crawl_{from_session}")
-            src_data = src_db.get(include=["documents", "metadatas"])
-
-            if not src_data["documents"]:
-                print(f"[CRAWL] Nothing to copy from {from_session}")
-                return
-
-            dst_db = self._get_session_db(f"crawl_{to_session}")
-            docs = [
-                Document(page_content=d, metadata=m)
-                for d, m in zip(src_data["documents"], src_data["metadatas"])
-            ]
-            dst_db.add_documents(docs)
-            print(f"[CRAWL] Copied {len(docs)} chunks from {from_session} to {to_session}")
-
-        except Exception as e:
-            print(f"[CRAWL] Copy failed: {e}")
 
 
 if __name__=='__main__':
