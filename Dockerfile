@@ -23,6 +23,6 @@ COPY . .
 
 RUN mkdir -p /app/public
 
-EXPOSE 8000
+EXPOSE $PORT
 
 CMD ["python", "main.py"]
