@@ -1,0 +1,30 @@
+
+
+services:
+  cosmospumps-ai:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: cosmospumps-ai
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./src:/app/src
+      - ./.chainlit:/app/.chainlit
+      - ./public:/app/public
+      - ./chainlit.md:/app/chainlit.md
+      - ./app.py:/app/app.py
+      - ./main.py:/app/main.py
+      - ./.env:/app/.env
+    env_file:
+      - .env
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PYTHONDONTWRITEBYTECODE=1
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
