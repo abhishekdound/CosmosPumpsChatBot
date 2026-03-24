@@ -29,11 +29,18 @@ class DataAcquisition:
     def __init__(self):
 
         self.image_analyzer = ImageAnalyzer()
-        self.embeddings = HuggingFaceEmbeddings(
-            model_name="BAAI/bge-small-en",
-            model_kwargs={'device': 'cpu'},
-            encode_kwargs={'normalize_embeddings': True}
+        # self.embeddings = HuggingFaceEmbeddings(
+        #     model_name="BAAI/bge-small-en",
+        #     model_kwargs={'device': 'cpu'},
+        #     encode_kwargs={'normalize_embeddings': True}
+        # )
+
+        self.embeddings = GoogleGenerativeAIEmbeddings(
+            model="models/gemini-embedding-2-preview",
+            google_api_key=os.getenv("GEMINI_API_KEY"),
+            task_type="retrieval_document"
         )
+        
 
     def _get_session_db(self, session_id: str) -> Chroma:
             """In-memory Chroma collection per session — auto wiped when cleared."""
