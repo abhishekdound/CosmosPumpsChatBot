@@ -82,11 +82,16 @@ rephrase_chain = PromptTemplate.from_template(REPHRASE_TEMPLATE) | llm | StrOutp
 
 from langchain_core.messages import trim_messages
 
+import tiktoken
+
+def count_tokens(messages):
+    enc = tiktoken.get_encoding("cl100k_base")
+    return sum(len(enc.encode(m.content)) for m in messages)
+
 trimmer = trim_messages(
-    max_tokens=1000,
+    max_tokens=2000,
     strategy="last",
-    token_counter=llm,
-    start_on="human",
+    token_counter=count_tokens,  
     include_system=True,
 )
 
