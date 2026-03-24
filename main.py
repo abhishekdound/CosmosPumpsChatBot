@@ -2,9 +2,14 @@
 from fastapi import FastAPI
 from chainlit.utils import mount_chainlit
 import uvicorn
+import os
+from dotenv import load_dotenv
 
+
+load_dotenv()
 
 app = FastAPI()
+
 
 
 
