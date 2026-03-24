@@ -12,4 +12,4 @@ app = FastAPI()
 mount_chainlit(app=app, target="app.py", path="/")
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000,timeout_keep_alive=120)
+    uvicorn.run(app, host="0.0.0.0", port=8000)

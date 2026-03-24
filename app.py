@@ -128,7 +128,7 @@ async def main(message: cl.Message):
 
     if not message.elements and is_url(message.content):
         url = message.content.strip()
-        status_msg  = await cl.Message(content=f"🔍 Fetching `{url}`...").send()
+        status_msg  = await cl.Message(content=f" Fetching `{url}`...").send()
         try:
 
             async with httpx.AsyncClient(
