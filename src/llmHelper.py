@@ -10,8 +10,8 @@ import src.webHookListner as webHookListner
 import asyncio
 
 
-from langchain_community.cross_encoders import HuggingFaceCrossEncoder
-from langchain_classic.retrievers.document_compressors import CrossEncoderReranker
+# from langchain_community.cross_encoders import HuggingFaceCrossEncoder
+# from langchain_classic.retrievers.document_compressors import CrossEncoderReranker
 
 from src.llm import llm
 
@@ -70,14 +70,14 @@ rephrase_chain = PromptTemplate.from_template(REPHRASE_TEMPLATE) | llm | StrOutp
 
 
 
-reranker_model = HuggingFaceCrossEncoder(
-    model_name="cross-encoder/ms-marco-MiniLM-L-6-v2"
-)
+# reranker_model = HuggingFaceCrossEncoder(
+#     model_name="cross-encoder/ms-marco-MiniLM-L-6-v2"
+# )
 
-reranker = CrossEncoderReranker(
-    model=reranker_model,
-    top_n=5
-)
+# reranker = CrossEncoderReranker(
+#     model=reranker_model,
+#     top_n=5
+# )
 
 
 from langchain_core.messages import trim_messages
@@ -138,10 +138,12 @@ async def retrieve(state: State):
 
     unique_docs = list({d.metadata.get("chunk_id", d.page_content): d for d in raw_docs}.values())
 
-    reranked_docs = await asyncio.to_thread(reranker.compress_documents, list(unique_docs), standalone_query)
+    # reranked_docs = await asyncio.to_thread(reranker.compress_documents, list(unique_docs), standalone_query)
 
-    if not reranked_docs:
-        reranked_docs = unique_docs[:5]
+    # if not reranked_docs:
+    #     reranked_docs = unique_docs[:5]
+
+    reranked_docs = unique_docs[:5]
 
     reranked_docs.sort(
         key=lambda d: 0 if (
